@@ -1,5 +1,6 @@
 # Local secrets — never commit
 secrets.env
+.env
 
 # Local runtime config (percentages, shortcuts, asset toggles)
 app_config.json
