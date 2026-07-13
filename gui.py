@@ -34,7 +34,7 @@ Submission-only:
   {action} {order_type} {limit_price} {status}
 
 Fill-only:
-  {side}
+  {side}                 BOUGHT / SOLD (mapped from IBKR BOT / SLD)
 
 Options-only:
   {option_type} {strike} {expiry}
@@ -236,10 +236,24 @@ class SettingsWindow(tk.Toplevel):
         self.monitor_stocks = tk.BooleanVar(value=self.app_config.get("monitor_stocks", True))
         self.monitor_options = tk.BooleanVar(value=self.app_config.get("monitor_options", True))
         self.monitor_futures = tk.BooleanVar(value=self.app_config.get("monitor_futures", True))
+        self.notify_order_submitted = tk.BooleanVar(value=self.app_config.get("notify_order_submitted", True))
 
         ttk.Checkbutton(frame, text="Stocks", variable=self.monitor_stocks).pack(anchor="w", pady=4)
         ttk.Checkbutton(frame, text="Options (including futures options)", variable=self.monitor_options).pack(anchor="w", pady=4)
         ttk.Checkbutton(frame, text="Futures", variable=self.monitor_futures).pack(anchor="w", pady=4)
+
+        ttk.Separator(frame).pack(fill="x", pady=16)
+        ttk.Label(frame, text="Order Alerts", font=("Arial", 12, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Checkbutton(
+            frame,
+            text="Send alerts when orders are submitted",
+            variable=self.notify_order_submitted,
+        ).pack(anchor="w", pady=4)
+        ttk.Label(
+            frame,
+            text="Turn this off to only receive filled-order messages.",
+            wraplength=560,
+        ).pack(anchor="w", pady=(4, 0))
 
     def create_percentages_tab(self):
         frame = self._create_scrollable_tab("Percentages")
@@ -475,6 +489,7 @@ class SettingsWindow(tk.Toplevel):
             "monitor_stocks": self.monitor_stocks.get(),
             "monitor_options": self.monitor_options.get(),
             "monitor_futures": self.monitor_futures.get(),
+            "notify_order_submitted": self.notify_order_submitted.get(),
             "shortcuts": shortcuts,
             "percentages": {
                 "defaults": defaults,

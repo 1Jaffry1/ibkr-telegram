@@ -173,6 +173,16 @@ def format_expiry(expiry):
 def format_option_type(right):
     return {'C': 'Call', 'P': 'Put'}.get(right, right or 'N/A')
 
+def format_side(side):
+    """Map IBKR execution codes to readable labels."""
+    return {
+        'BOT': 'BOUGHT',
+        'SLD': 'SOLD',
+        'BUY': 'BUY',
+        'SELL': 'SELL',
+        'SSHORT': 'SHORT',
+    }.get(side, side or '')
+
 def format_limit_price(order):
     if order.orderType in ('MKT', 'MIDPRICE') or order.lmtPrice in (UNSET_DOUBLE, None):
         return 'Market'
@@ -206,7 +216,12 @@ def build_contract_context(contract, quantity=0, price=0, app_config=None):
         expiry = format_expiry(contract.lastTradeDateOrContractMonth)
 
     config = app_config if app_config is not None else load_config()
+    quantity = float(quantity or 0)
     pct = calculate_percentage(config, contract, quantity, price)
+    if quantity == int(quantity):
+        quantity_display = int(quantity)
+    else:
+        quantity_display = quantity
 
     return {
         'symbol': contract.symbol,
@@ -219,7 +234,7 @@ def build_contract_context(contract, quantity=0, price=0, app_config=None):
         'multiplier': contract.multiplier or '',
         'trading_class': contract.tradingClass or '',
         'sec_type': contract.secType,
-        'quantity': int(quantity) if quantity is not None else 0,
+        'quantity': quantity_display,
         'percentage': format_percentage_label(pct),
         'percentage_raw': pct if pct is not None else '',
     }
@@ -230,7 +245,7 @@ def build_order_context(contract, order, status='', app_config=None):
         price = order.lmtPrice
     context = build_contract_context(contract, order.totalQuantity, price, app_config=app_config)
     context.update({
-        'action': order.action,
+        'action': format_side(order.action),
         'order_type': order.orderType,
         'limit_price': format_limit_price(order),
         'status': status,
@@ -238,11 +253,14 @@ def build_order_context(contract, order, status='', app_config=None):
     })
     return context
 
-def build_trade_context(contract, execution, commission, app_config=None):
-    quantity = int(execution.shares)
+def build_trade_context(contract, execution, commission, app_config=None, quantity=None):
+    # Prefer full filled size (cumQty / order total), not just the last partial lot.
+    if quantity is None:
+        quantity = execution.cumQty or execution.shares
+    quantity = float(quantity or 0)
     context = build_contract_context(contract, quantity, execution.price, app_config=app_config)
     context.update({
-        'side': execution.side,
+        'side': format_side(execution.side),
         'price': execution.price,
         'commission': commission,
         'time': execution.time,
@@ -260,8 +278,10 @@ def format_order_message(contract, order, status='', app_config=None):
     )
     return template.format(**context)
 
-def format_trade_message(contract, execution, commission, app_config=None):
-    context = build_trade_context(contract, execution, commission, app_config=app_config)
+def format_trade_message(contract, execution, commission, app_config=None, quantity=None):
+    context = build_trade_context(
+        contract, execution, commission, app_config=app_config, quantity=quantity
+    )
     template = select_message_template(
         contract,
         TRADE_MESSAGE_TEMPLATE,
@@ -486,6 +506,12 @@ class TradeMonitor(EWrapper, EClient):
         if perm_id in self.notified_submissions:
             return
 
+        self.app_config = load_config()
+        if not self.app_config.get("notify_order_submitted", True):
+            # Mark as handled so fill alerts do not try to send a submission first.
+            self.notified_submissions.add(perm_id)
+            return
+
         order_info = self.orders_by_perm_id.get(perm_id)
         if not order_info:
             return
@@ -540,10 +566,26 @@ class TradeMonitor(EWrapper, EClient):
             if order_info:
                 self._try_notify_submission(perm_id)
 
-        trade_msg = format_trade_message(contract, execution, commission, app_config=self.app_config)
+        # Use full order size for %, not the last partial fill lot.
+        order_info = self.orders_by_perm_id.get(perm_id)
+        fill_qty = float(getattr(execution, 'cumQty', 0) or 0) or float(execution.shares or 0)
+        if status_info and status_info.get('filled'):
+            fill_qty = max(fill_qty, float(status_info['filled']))
+        if order_info and status_info and (
+            status_info.get('status') == 'Filled'
+            or float(status_info.get('remaining', 1) or 1) == 0
+        ):
+            fill_qty = max(fill_qty, float(order_info['order'].totalQuantity or 0))
+
+        trade_msg = format_trade_message(
+            contract, execution, commission,
+            app_config=self.app_config,
+            quantity=fill_qty,
+        )
         label = build_contract_description(contract)
         reply_to = self.submission_message_ids.get(perm_id)
-        message_id = send_telegram_message(trade_msg, reply_to=reply_to, silent=True)
+        # Silent only when replying under a prior submission alert.
+        message_id = send_telegram_message(trade_msg, reply_to=reply_to, silent=bool(reply_to))
 
         if message_id:
             self.notified_fills.add(perm_id)

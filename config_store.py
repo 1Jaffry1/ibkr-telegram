@@ -21,6 +21,7 @@ DEFAULT_CONFIG = {
     "monitor_stocks": True,
     "monitor_options": True,
     "monitor_futures": True,
+    "notify_order_submitted": True,
     "shortcuts": DEFAULT_SHORTCUTS,
     "percentages": {
         "defaults": {
@@ -75,7 +76,7 @@ def _deep_merge_defaults(data):
     if not isinstance(data, dict):
         return merged
 
-    for key in ("monitor_stocks", "monitor_options", "monitor_futures"):
+    for key in ("monitor_stocks", "monitor_options", "monitor_futures", "notify_order_submitted"):
         if key in data:
             merged[key] = bool(data[key])
 
