@@ -1,0 +1,38 @@
+{
+  "monitor_stocks": true,
+  "monitor_options": true,
+  "monitor_futures": true,
+  "notify_order_submitted": true,
+  "shortcuts": [
+    {
+      "id": "starting_trade",
+      "label": "Starting Trade",
+      "message": "🟢 *Starting trade*"
+    },
+    {
+      "id": "ending_trade",
+      "label": "Ending Trade",
+      "message": "🔴 *Ending trade*"
+    },
+    {
+      "id": "trimming",
+      "label": "Trimming",
+      "message": "✂️ *Trimming*"
+    }
+  ],
+  "percentages": {
+    "defaults": {
+      "stock": { "unit": "quantity", "value": 100 },
+      "option": { "unit": "quantity", "value": 1 },
+      "future": { "unit": "quantity", "value": 1 }
+    },
+    "exceptions": [
+      {
+        "symbol": "GLD",
+        "asset": "option",
+        "unit": "quantity",
+        "value": 8
+      }
+    ]
+  }
+}

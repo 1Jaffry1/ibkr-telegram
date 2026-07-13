@@ -8,8 +8,26 @@ from dotenv import dotenv_values, load_dotenv
 CONFIG_PATH = "app_config.json"
 ENV_PATH = ".env"
 SECRETS_PATH = "secrets.env"
+MESSAGES_PATH = "messages.env"
 
 SECRET_KEYS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+CONNECTION_KEYS = (
+    "IBKR_HOST",
+    "IBKR_PORT",
+    "IBKR_CLIENT_ID",
+    "AUTO_STOP_ENABLED",
+    "STOP_TIME",
+)
+MESSAGE_KEYS = (
+    "ORDER_MESSAGE",
+    "ORDER_OPTION_MESSAGE",
+    "ORDER_FUTURE_MESSAGE",
+    "TRADE_MESSAGE",
+    "OPTION_MESSAGE",
+    "FUTURE_MESSAGE",
+    "CONNECTED_MESSAGE",
+    "CLOSED_MESSAGE",
+)
 
 DEFAULT_SHORTCUTS = [
     {"id": "starting_trade", "label": "Starting Trade", "message": "🟢 *Starting trade*"},
@@ -22,6 +40,7 @@ DEFAULT_CONFIG = {
     "monitor_options": True,
     "monitor_futures": True,
     "notify_order_submitted": True,
+    "seen_setup_guide": False,
     "shortcuts": DEFAULT_SHORTCUTS,
     "percentages": {
         "defaults": {
@@ -37,20 +56,21 @@ DEFAULT_CONFIG = {
 
 
 def load_env_files(override=True):
-    """Load shareable .env first, then secrets.env on top."""
+    """Load .env, then messages.env, then secrets.env on top."""
     if os.path.exists(ENV_PATH):
         load_dotenv(ENV_PATH, override=override)
+    if os.path.exists(MESSAGES_PATH):
+        load_dotenv(MESSAGES_PATH, override=True)
     if os.path.exists(SECRETS_PATH):
         load_dotenv(SECRETS_PATH, override=True)
 
 
 def read_env_values():
-    """Return merged values from .env and secrets.env for the settings UI."""
+    """Return merged values from .env, messages.env, and secrets.env for the settings UI."""
     values = {}
-    if os.path.exists(ENV_PATH):
-        values.update(dotenv_values(ENV_PATH) or {})
-    if os.path.exists(SECRETS_PATH):
-        values.update(dotenv_values(SECRETS_PATH) or {})
+    for path in (ENV_PATH, MESSAGES_PATH, SECRETS_PATH):
+        if os.path.exists(path):
+            values.update(dotenv_values(path) or {})
     return values
 
 
@@ -62,10 +82,19 @@ def write_env_file(path, config):
 
 
 def save_env_and_secrets(all_config):
-    """Split secrets into secrets.env and everything else into .env."""
+    """Split settings into .env, messages.env, and secrets.env."""
     secrets = {key: all_config[key] for key in SECRET_KEYS if key in all_config}
-    public = {key: value for key, value in all_config.items() if key not in SECRET_KEYS}
-    write_env_file(ENV_PATH, public)
+    messages = {key: all_config[key] for key in MESSAGE_KEYS if key in all_config}
+    connection = {key: all_config[key] for key in CONNECTION_KEYS if key in all_config}
+
+    # Any unexpected keys go into .env so nothing is dropped.
+    known = set(SECRET_KEYS) | set(MESSAGE_KEYS) | set(CONNECTION_KEYS)
+    for key, value in all_config.items():
+        if key not in known:
+            connection[key] = value
+
+    write_env_file(ENV_PATH, connection)
+    write_env_file(MESSAGES_PATH, messages)
     write_env_file(SECRETS_PATH, secrets)
     load_env_files(override=True)
 
@@ -76,7 +105,7 @@ def _deep_merge_defaults(data):
     if not isinstance(data, dict):
         return merged
 
-    for key in ("monitor_stocks", "monitor_options", "monitor_futures", "notify_order_submitted"):
+    for key in ("monitor_stocks", "monitor_options", "monitor_futures", "notify_order_submitted", "seen_setup_guide"):
         if key in data:
             merged[key] = bool(data[key])
 

@@ -1,8 +1,14 @@
 # Local secrets — never commit
 secrets.env
+
+# Local connection settings
 .env
 
+# Local message templates
+messages.env
+
 # Local runtime config (percentages, shortcuts, asset toggles)
+# Created from built-in defaults on first run if missing
 app_config.json
 
 # Virtualenv
