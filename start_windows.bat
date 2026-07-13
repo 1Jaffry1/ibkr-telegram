@@ -3,19 +3,18 @@ cls
 color 0A
 echo.
 echo ========================================
-echo    IBKR Trade Alerts - Starting...
+echo    IBKR Trade Alerts
 echo ========================================
 echo.
-echo Your alerts will be sent to Telegram
-echo Press Ctrl+C to stop the script
+echo Opening companion window...
 echo.
-pause
 
-python client.py
+python gui.py
 
-echo.
-echo ========================================
-echo    Script stopped
-echo ========================================
-echo.
-pause
+if errorlevel 1 (
+    echo.
+    echo Error: Make sure Python is installed and dependencies are set up!
+    echo Run: pip install -r requirements.txt
+    echo.
+    pause
+)

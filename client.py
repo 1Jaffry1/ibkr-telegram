@@ -1,18 +1,28 @@
 import os
 import sys
+import threading
+import time as time_module
 from datetime import datetime, time
-from dotenv import load_dotenv
 from ibapi.client import EClient
 from ibapi.common import UNSET_DOUBLE
 from ibapi.wrapper import EWrapper
 import requests
 
-load_dotenv()
+from config_store import (
+    calculate_percentage,
+    format_percentage_label,
+    is_asset_enabled,
+    load_config,
+    load_env_files,
+)
+
+load_env_files()
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 OPTION_SEC_TYPES = {'OPT', 'FOP', 'IOPT'}
+FUTURE_SEC_TYPES = {'FUT', 'CONTFUT'}
 SUBMISSION_STATUSES = {'Submitted', 'PreSubmitted', 'PendingSubmit'}
 
 def getenv_or_default(key, default):
@@ -21,42 +31,77 @@ def getenv_or_default(key, default):
         return default
     return value
 
-# Load custom messages from .env
-CONNECTED_MESSAGE = getenv_or_default('CONNECTED_MESSAGE', '✅ Connected to IBKR. Ready for trades.')
-CLOSED_MESSAGE = getenv_or_default('CLOSED_MESSAGE', '📊 Market closed. Trade monitor stopping.')
+def reload_env():
+    load_env_files(override=True)
+    global TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    global CONNECTED_MESSAGE, CLOSED_MESSAGE
+    global ORDER_MESSAGE_TEMPLATE, ORDER_OPTION_MESSAGE_TEMPLATE, ORDER_FUTURE_MESSAGE_TEMPLATE
+    global TRADE_MESSAGE_TEMPLATE, OPTION_MESSAGE_TEMPLATE, FUTURE_MESSAGE_TEMPLATE
+    global AUTO_STOP_ENABLED, STOP_TIME
 
-ORDER_MESSAGE_TEMPLATE = getenv_or_default('ORDER_MESSAGE', """📝 *ORDER SUBMITTED*
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+    CONNECTED_MESSAGE = getenv_or_default('CONNECTED_MESSAGE', '✅ Connected to IBKR. Ready for trades.')
+    CLOSED_MESSAGE = getenv_or_default('CLOSED_MESSAGE', '📊 Market closed. Trade monitor stopping.')
+    ORDER_MESSAGE_TEMPLATE = getenv_or_default('ORDER_MESSAGE', DEFAULT_ORDER_MESSAGE)
+    ORDER_OPTION_MESSAGE_TEMPLATE = getenv_or_default('ORDER_OPTION_MESSAGE', DEFAULT_ORDER_OPTION_MESSAGE)
+    ORDER_FUTURE_MESSAGE_TEMPLATE = getenv_or_default('ORDER_FUTURE_MESSAGE', DEFAULT_ORDER_FUTURE_MESSAGE)
+    TRADE_MESSAGE_TEMPLATE = getenv_or_default('TRADE_MESSAGE', DEFAULT_TRADE_MESSAGE)
+    OPTION_MESSAGE_TEMPLATE = getenv_or_default('OPTION_MESSAGE', DEFAULT_OPTION_MESSAGE)
+    FUTURE_MESSAGE_TEMPLATE = getenv_or_default('FUTURE_MESSAGE', DEFAULT_FUTURE_MESSAGE)
+    AUTO_STOP_ENABLED = parse_bool(os.getenv('AUTO_STOP_ENABLED'), default=True)
+
+    stop_time_str = os.getenv('STOP_TIME', '16:00')
+    try:
+        stop_hour, stop_minute = map(int, stop_time_str.split(':'))
+        STOP_TIME = time(stop_hour, stop_minute)
+    except Exception:
+        STOP_TIME = time(16, 0)
+
+DEFAULT_ORDER_MESSAGE = """📝 *ORDER SUBMITTED*
 
 *Symbol:* `{symbol}`
 *Exchange:* `{exchange}`
 *Action:* `{action}`
-*Quantity:* `{quantity}`
+*Size:* `{percentage}` of full size
 *Type:* `{order_type}`
 *Price:* `{limit_price}`
-*Status:* `{status}`""")
+*Status:* `{status}`"""
 
-ORDER_OPTION_MESSAGE_TEMPLATE = getenv_or_default('ORDER_OPTION_MESSAGE', """📝 *OPTION ORDER SUBMITTED*
+DEFAULT_ORDER_OPTION_MESSAGE = """📝 *OPTION ORDER SUBMITTED*
 
 *Underlying:* `{symbol}`
 *Contract:* `{contract_description}`
 *Action:* `{action}`
-*Contracts:* `{quantity}`
+*Size:* `{percentage}` of full size
 *Type:* `{order_type}`
 *Price:* `{limit_price}`
-*Status:* `{status}`""")
+*Status:* `{status}`"""
 
-TRADE_MESSAGE_TEMPLATE = getenv_or_default('TRADE_MESSAGE', """✅ *ORDER FILLED*
+DEFAULT_ORDER_FUTURE_MESSAGE = """📝 *FUTURES ORDER SUBMITTED*
+
+*Symbol:* `{symbol}`
+*Contract:* `{contract_description}`
+*Expiry:* `{expiry}`
+*Exchange:* `{exchange}`
+*Action:* `{action}`
+*Size:* `{percentage}` of full size
+*Type:* `{order_type}`
+*Price:* `{limit_price}`
+*Status:* `{status}`"""
+
+DEFAULT_TRADE_MESSAGE = """✅ *ORDER FILLED*
 
 *Symbol:* `{symbol}`
 *Exchange:* `{exchange}`
 *Action:* `{side}`
-*Quantity:* `{quantity}`
+*Size:* `{percentage}` of full size
 *Price:* `${price}`
 *Commission:* `${commission}`
 *Time:* `{time}`
-*Account:* `{account}`""")
+*Account:* `{account}`"""
 
-OPTION_MESSAGE_TEMPLATE = getenv_or_default('OPTION_MESSAGE', """✅ *OPTION ORDER FILLED*
+DEFAULT_OPTION_MESSAGE = """✅ *OPTION ORDER FILLED*
 
 *Underlying:* `{symbol}`
 *Contract:* `{contract_description}`
@@ -64,24 +109,45 @@ OPTION_MESSAGE_TEMPLATE = getenv_or_default('OPTION_MESSAGE', """✅ *OPTION ORD
 *Strike:* `${strike}`
 *Expiry:* `{expiry}`
 *Action:* `{side}`
-*Contracts:* `{quantity}`
+*Size:* `{percentage}` of full size
 *Price:* `${price}`
 *Commission:* `${commission}`
 *Time:* `{time}`
-*Account:* `{account}`""")
+*Account:* `{account}`"""
 
-# Parse stop time
-stop_time_str = os.getenv('STOP_TIME', '16:00')
-try:
-    stop_hour, stop_minute = map(int, stop_time_str.split(':'))
-    STOP_TIME = time(stop_hour, stop_minute)
-except:
-    STOP_TIME = time(16, 0)
+DEFAULT_FUTURE_MESSAGE = """✅ *FUTURES ORDER FILLED*
+
+*Symbol:* `{symbol}`
+*Contract:* `{contract_description}`
+*Expiry:* `{expiry}`
+*Exchange:* `{exchange}`
+*Action:* `{side}`
+*Size:* `{percentage}` of full size
+*Price:* `{price}`
+*Commission:* `${commission}`
+*Time:* `{time}`
+*Account:* `{account}`"""
+
+CONNECTED_MESSAGE = getenv_or_default('CONNECTED_MESSAGE', '✅ Connected to IBKR. Ready for trades.')
+CLOSED_MESSAGE = getenv_or_default('CLOSED_MESSAGE', '📊 Market closed. Trade monitor stopping.')
+ORDER_MESSAGE_TEMPLATE = getenv_or_default('ORDER_MESSAGE', DEFAULT_ORDER_MESSAGE)
+ORDER_OPTION_MESSAGE_TEMPLATE = getenv_or_default('ORDER_OPTION_MESSAGE', DEFAULT_ORDER_OPTION_MESSAGE)
+ORDER_FUTURE_MESSAGE_TEMPLATE = getenv_or_default('ORDER_FUTURE_MESSAGE', DEFAULT_ORDER_FUTURE_MESSAGE)
+TRADE_MESSAGE_TEMPLATE = getenv_or_default('TRADE_MESSAGE', DEFAULT_TRADE_MESSAGE)
+OPTION_MESSAGE_TEMPLATE = getenv_or_default('OPTION_MESSAGE', DEFAULT_OPTION_MESSAGE)
+FUTURE_MESSAGE_TEMPLATE = getenv_or_default('FUTURE_MESSAGE', DEFAULT_FUTURE_MESSAGE)
 
 def parse_bool(value, default=False):
     if value is None:
         return default
     return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+stop_time_str = os.getenv('STOP_TIME', '16:00')
+try:
+    stop_hour, stop_minute = map(int, stop_time_str.split(':'))
+    STOP_TIME = time(stop_hour, stop_minute)
+except Exception:
+    STOP_TIME = time(16, 0)
 
 AUTO_STOP_ENABLED = parse_bool(os.getenv('AUTO_STOP_ENABLED'), default=True)
 
@@ -90,6 +156,9 @@ def should_auto_stop():
 
 def is_option_contract(contract):
     return contract.secType in OPTION_SEC_TYPES
+
+def is_future_contract(contract):
+    return contract.secType in FUTURE_SEC_TYPES
 
 def format_expiry(expiry):
     if not expiry:
@@ -115,37 +184,65 @@ def build_contract_description(contract):
             f"{contract.symbol} {format_expiry(contract.lastTradeDateOrContractMonth)} "
             f"${contract.strike:g} {format_option_type(contract.right)}"
         )
+    if is_future_contract(contract):
+        if contract.localSymbol:
+            return contract.localSymbol
+        expiry = format_expiry(contract.lastTradeDateOrContractMonth)
+        return f"{contract.symbol} {expiry}".strip()
     return contract.symbol
 
-def build_contract_context(contract):
+def select_message_template(contract, stock_template, option_template, future_template):
+    if is_option_contract(contract):
+        return option_template
+    if is_future_contract(contract):
+        return future_template
+    return stock_template
+
+def build_contract_context(contract, quantity=0, price=0, app_config=None):
+    is_option = is_option_contract(contract)
+    is_future = is_future_contract(contract)
+    expiry = ''
+    if is_option or is_future:
+        expiry = format_expiry(contract.lastTradeDateOrContractMonth)
+
+    config = app_config if app_config is not None else load_config()
+    pct = calculate_percentage(config, contract, quantity, price)
+
     return {
         'symbol': contract.symbol,
-        'exchange': contract.exchange,
+        'exchange': contract.exchange or contract.primaryExchange or '',
         'contract_description': build_contract_description(contract),
-        'option_type': format_option_type(contract.right),
-        'strike': contract.strike if is_option_contract(contract) else '',
-        'expiry': format_expiry(contract.lastTradeDateOrContractMonth) if is_option_contract(contract) else '',
+        'option_type': format_option_type(contract.right) if is_option else '',
+        'strike': contract.strike if is_option else '',
+        'expiry': expiry,
         'local_symbol': contract.localSymbol or contract.symbol,
+        'multiplier': contract.multiplier or '',
+        'trading_class': contract.tradingClass or '',
         'sec_type': contract.secType,
+        'quantity': int(quantity) if quantity is not None else 0,
+        'percentage': format_percentage_label(pct),
+        'percentage_raw': pct if pct is not None else '',
     }
 
-def build_order_context(contract, order, status=''):
-    context = build_contract_context(contract)
+def build_order_context(contract, order, status='', app_config=None):
+    price = 0
+    if order.orderType not in ('MKT', 'MIDPRICE') and order.lmtPrice not in (UNSET_DOUBLE, None):
+        price = order.lmtPrice
+    context = build_contract_context(contract, order.totalQuantity, price, app_config=app_config)
     context.update({
         'action': order.action,
-        'quantity': int(order.totalQuantity),
         'order_type': order.orderType,
         'limit_price': format_limit_price(order),
         'status': status,
+        'price': price,
     })
     return context
 
-def build_trade_context(contract, execution, commission):
+def build_trade_context(contract, execution, commission, app_config=None):
     quantity = int(execution.shares)
-    context = build_contract_context(contract)
+    context = build_contract_context(contract, quantity, execution.price, app_config=app_config)
     context.update({
         'side': execution.side,
-        'quantity': quantity,
         'price': execution.price,
         'commission': commission,
         'time': execution.time,
@@ -153,14 +250,24 @@ def build_trade_context(contract, execution, commission):
     })
     return context
 
-def format_order_message(contract, order, status=''):
-    context = build_order_context(contract, order, status)
-    template = ORDER_OPTION_MESSAGE_TEMPLATE if is_option_contract(contract) else ORDER_MESSAGE_TEMPLATE
+def format_order_message(contract, order, status='', app_config=None):
+    context = build_order_context(contract, order, status, app_config=app_config)
+    template = select_message_template(
+        contract,
+        ORDER_MESSAGE_TEMPLATE,
+        ORDER_OPTION_MESSAGE_TEMPLATE,
+        ORDER_FUTURE_MESSAGE_TEMPLATE,
+    )
     return template.format(**context)
 
-def format_trade_message(contract, execution, commission):
-    context = build_trade_context(contract, execution, commission)
-    template = OPTION_MESSAGE_TEMPLATE if is_option_contract(contract) else TRADE_MESSAGE_TEMPLATE
+def format_trade_message(contract, execution, commission, app_config=None):
+    context = build_trade_context(contract, execution, commission, app_config=app_config)
+    template = select_message_template(
+        contract,
+        TRADE_MESSAGE_TEMPLATE,
+        OPTION_MESSAGE_TEMPLATE,
+        FUTURE_MESSAGE_TEMPLATE,
+    )
     return template.format(**context)
 
 def send_telegram_message(message, reply_to=None, silent=False):
@@ -169,9 +276,11 @@ def send_telegram_message(message, reply_to=None, silent=False):
         print("⚠️  Skipping empty Telegram message")
         return None
 
-    url = f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage'
+    token = os.getenv('TELEGRAM_BOT_TOKEN') or TELEGRAM_BOT_TOKEN
+    chat_id = os.getenv('TELEGRAM_CHAT_ID') or TELEGRAM_CHAT_ID
+    url = f'https://api.telegram.org/bot{token}/sendMessage'
     data = {
-        'chat_id': TELEGRAM_CHAT_ID,
+        'chat_id': chat_id,
         'text': message,
         'parse_mode': 'Markdown',
     }
@@ -196,9 +305,12 @@ def send_telegram_message(message, reply_to=None, silent=False):
     return None
 
 class TradeMonitor(EWrapper, EClient):
-    def __init__(self, client_id):
+    def __init__(self, client_id, status_callback=None, allow_exit=True):
         EClient.__init__(self, self)
         self.client_id = client_id
+        self.status_callback = status_callback
+        self.allow_exit = allow_exit
+        self.stop_requested = False
         self.nextOrderId = None
         self.orders_by_perm_id = {}
         self.orders_by_order_id = {}
@@ -208,26 +320,58 @@ class TradeMonitor(EWrapper, EClient):
         self.notified_submissions = set()
         self.notified_fills = set()
         self.pending_executions = {}
+        self.app_config = load_config()
+
+    def _emit(self, message):
+        print(message)
+        if self.status_callback:
+            try:
+                self.status_callback(message)
+            except Exception:
+                pass
+
+    def request_stop(self):
+        self.stop_requested = True
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+
+    def reload_runtime_config(self):
+        reload_env()
+        self.app_config = load_config()
 
     def nextValidId(self, orderId):
         self.nextOrderId = orderId
-        print(CONNECTED_MESSAGE)
+        self.reload_runtime_config()
+        self._emit(CONNECTED_MESSAGE)
         send_telegram_message(CONNECTED_MESSAGE)
         self._subscribe_to_orders()
 
     def _subscribe_to_orders(self):
         if self.client_id == 0:
-            print("🔗 Binding manual orders (client ID 0)...")
+            self._emit("🔗 Binding manual orders (client ID 0)...")
             self.reqAutoOpenOrders(True)
             self.reqOpenOrders()
         else:
-            print("⚠️  Client ID is not 0 — manual orders may not be detected.")
-            print("   Fix: set Client ID to 0 in settings, or set Master API Client ID to match in TWS/Gateway.")
+            self._emit("⚠️  Client ID is not 0 — manual orders may not be detected.")
             self.reqAllOpenOrders()
 
+    def _should_skip_contract(self, contract):
+        self.app_config = load_config()
+        if not is_asset_enabled(self.app_config, contract):
+            label = build_contract_description(contract)
+            self._emit(f"⏭️  Skipping {label} ({contract.secType}) — asset type disabled")
+            return True
+        return False
+
     def openOrder(self, orderId, contract, order, orderState):
+        if self.stop_requested:
+            return
         if should_auto_stop():
             self._handle_auto_stop()
+            return
+        if self._should_skip_contract(contract):
             return
 
         perm_id = order.permId or self._perm_id_for_order(orderId)
@@ -249,14 +393,16 @@ class TradeMonitor(EWrapper, EClient):
                 'orderId': orderId,
             }
 
-        print(
+        self._emit(
             f"📋 openOrder: {build_contract_description(contract)} "
-            f"status={state_status or 'n/a'} permId={perm_id} orderId={orderId}"
+            f"status={state_status or 'n/a'} permId={perm_id}"
         )
         self._try_notify_submission(perm_id, state_status)
 
     def orderStatus(self, orderId, status, filled, remaining, avgFillPrice, permId,
                     parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
+        if self.stop_requested:
+            return
         if should_auto_stop():
             self._handle_auto_stop()
             return
@@ -270,9 +416,13 @@ class TradeMonitor(EWrapper, EClient):
         }
         self.orders_by_order_id[orderId] = permId
 
-        print(
-            f"📊 orderStatus: permId={permId} orderId={orderId} "
-            f"status={status} filled={filled} remaining={remaining}"
+        order_info = self.orders_by_perm_id.get(permId)
+        if order_info and self._should_skip_contract(order_info['contract']):
+            return
+
+        self._emit(
+            f"📊 orderStatus: permId={permId} status={status} "
+            f"filled={filled} remaining={remaining}"
         )
 
         if status in SUBMISSION_STATUSES:
@@ -283,15 +433,19 @@ class TradeMonitor(EWrapper, EClient):
             self._try_notify_fill(permId)
 
     def execDetails(self, reqId, contract, execution):
+        if self.stop_requested:
+            return
         if should_auto_stop():
             self._handle_auto_stop()
+            return
+        if self._should_skip_contract(contract):
             return
 
         self.pending_executions[execution.execId] = (contract, execution)
         self.last_execution_by_perm_id[execution.permId] = (contract, execution)
-        print(
+        self._emit(
             f"💱 execDetails: {build_contract_description(contract)} "
-            f"permId={execution.permId} qty={execution.shares} price={execution.price}"
+            f"qty={execution.shares} price={execution.price}"
         )
 
     def commissionReport(self, commissionReport):
@@ -300,11 +454,16 @@ class TradeMonitor(EWrapper, EClient):
             return
 
         contract, execution = pending
+        if self._should_skip_contract(contract):
+            return
         self.last_execution_by_perm_id[execution.permId] = (contract, execution, commissionReport.commission)
         self._try_notify_fill(execution.permId)
 
     def execDetailsEnd(self, reqId):
         for exec_id, (contract, execution) in list(self.pending_executions.items()):
+            if self._should_skip_contract(contract):
+                del self.pending_executions[exec_id]
+                continue
             self.last_execution_by_perm_id[execution.permId] = (contract, execution, 0)
             self._try_notify_fill(execution.permId)
             del self.pending_executions[exec_id]
@@ -313,10 +472,15 @@ class TradeMonitor(EWrapper, EClient):
         return self.orders_by_order_id.get(order_id, order_id)
 
     def _handle_auto_stop(self):
-        print(f"⏰ {CLOSED_MESSAGE}")
+        self._emit(f"⏰ {CLOSED_MESSAGE}")
         send_telegram_message(CLOSED_MESSAGE)
-        self.disconnect()
-        sys.exit(0)
+        self.stop_requested = True
+        try:
+            self.disconnect()
+        except Exception:
+            pass
+        if self.allow_exit:
+            sys.exit(0)
 
     def _try_notify_submission(self, perm_id, status=''):
         if perm_id in self.notified_submissions:
@@ -328,15 +492,15 @@ class TradeMonitor(EWrapper, EClient):
 
         status_info = self.order_status_by_perm_id.get(perm_id, {})
         current_status = status or status_info.get('status', '')
-        if current_status in ('Cancelled', 'Inactive', 'ApiCancelled', 'Filled'):
-            if current_status != 'Filled':
-                return
+        if current_status in ('Cancelled', 'Inactive', 'ApiCancelled'):
+            return
 
         contract = order_info['contract']
         order = order_info['order']
         message = format_order_message(
             contract, order,
-            'Submitted' if current_status == 'Filled' else (current_status or 'Submitted')
+            'Submitted' if current_status == 'Filled' else (current_status or 'Submitted'),
+            app_config=self.app_config,
         )
         label = build_contract_description(contract)
         message_id = send_telegram_message(message)
@@ -344,9 +508,9 @@ class TradeMonitor(EWrapper, EClient):
         if message_id:
             self.notified_submissions.add(perm_id)
             self.submission_message_ids[perm_id] = message_id
-            print(f"📤 Order submitted alert sent for {label}")
+            self._emit(f"📤 Order submitted alert sent for {label}")
         else:
-            print(f"❌ Failed to send order submitted alert for {label}")
+            self._emit(f"❌ Failed to send order submitted alert for {label}")
 
     def _try_notify_fill(self, perm_id):
         if perm_id in self.notified_fills:
@@ -376,33 +540,90 @@ class TradeMonitor(EWrapper, EClient):
             if order_info:
                 self._try_notify_submission(perm_id)
 
-        trade_msg = format_trade_message(contract, execution, commission)
+        trade_msg = format_trade_message(contract, execution, commission, app_config=self.app_config)
         label = build_contract_description(contract)
         reply_to = self.submission_message_ids.get(perm_id)
         message_id = send_telegram_message(trade_msg, reply_to=reply_to, silent=True)
 
         if message_id:
             self.notified_fills.add(perm_id)
-            print(f"✅ Fill alert sent for {label}")
+            self._emit(f"✅ Fill alert sent for {label}")
         else:
-            print(f"❌ Failed to send fill alert for {label}")
+            self._emit(f"❌ Failed to send fill alert for {label}")
 
     def error(self, reqId, errorCode, errorString):
         if errorCode not in (1100, 2104, 2106, 2158):
-            print(f"❌ Error {errorCode}: {errorString}")
+            self._emit(f"❌ Error {errorCode}: {errorString}")
 
     def connectionClosed(self):
-        print("⚠️  Connection closed. Reconnecting...")
-        import time
-        time.sleep(5)
+        if self.stop_requested:
+            self._emit("🛑 Monitoring stopped")
+            return
+        self._emit("⚠️  Connection closed. Reconnecting...")
+        time_module.sleep(5)
+        if self.stop_requested:
+            return
         self.connect(
-            os.getenv('IBKR_HOST'),
-            int(os.getenv('IBKR_PORT')),
+            os.getenv('IBKR_HOST', '127.0.0.1'),
+            int(os.getenv('IBKR_PORT', 7496)),
             int(os.getenv('IBKR_CLIENT_ID', '0'))
         )
 
+
+class MonitorController:
+    """Start/stop TradeMonitor from the companion GUI."""
+
+    def __init__(self, status_callback=None):
+        self.status_callback = status_callback
+        self.monitor = None
+        self.thread = None
+
+    @property
+    def is_running(self):
+        return self.thread is not None and self.thread.is_alive()
+
+    def start(self):
+        if self.is_running:
+            return False
+
+        reload_env()
+        host = os.getenv('IBKR_HOST', '127.0.0.1')
+        port = int(os.getenv('IBKR_PORT', 7496))
+        client_id = int(os.getenv('IBKR_CLIENT_ID', '0'))
+
+        self.monitor = TradeMonitor(
+            client_id=client_id,
+            status_callback=self.status_callback,
+            allow_exit=False,
+        )
+
+        def _run():
+            try:
+                if self.status_callback:
+                    self.status_callback(f"🔄 Connecting to IBKR on {host}:{port} (client ID {client_id})...")
+                self.monitor.connect(host, port, client_id)
+                self.monitor.run()
+            except Exception as exc:
+                if self.status_callback:
+                    self.status_callback(f"❌ Monitor error: {exc}")
+            finally:
+                if self.status_callback:
+                    self.status_callback("🛑 Monitoring stopped")
+
+        self.thread = threading.Thread(target=_run, daemon=True)
+        self.thread.start()
+        return True
+
+    def stop(self):
+        if not self.monitor:
+            return False
+        self.monitor.request_stop()
+        return True
+
+
 def main():
-    app = TradeMonitor(client_id=int(os.getenv('IBKR_CLIENT_ID', '0')))
+    reload_env()
+    app = TradeMonitor(client_id=int(os.getenv('IBKR_CLIENT_ID', '0')), allow_exit=True)
 
     host = os.getenv('IBKR_HOST', '127.0.0.1')
     port = int(os.getenv('IBKR_PORT', 7496))

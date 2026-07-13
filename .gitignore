@@ -1,2 +1,8 @@
-.env
+# Local secrets — never commit
+secrets.env
+
+# Local runtime config (percentages, shortcuts, asset toggles)
+app_config.json
+
+# Virtualenv
 .venv/
