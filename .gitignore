@@ -11,5 +11,8 @@ messages.env
 # Created from built-in defaults on first run if missing
 app_config.json
 
+# Session / long-term trade summary counters
+trade_summary.json
+
 # Virtualenv
 .venv/

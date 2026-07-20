@@ -25,6 +25,8 @@ MESSAGE_KEYS = (
     "TRADE_MESSAGE",
     "OPTION_MESSAGE",
     "FUTURE_MESSAGE",
+    "SUMMARY_MESSAGE",
+    "LONG_TERM_SUMMARY_MESSAGE",
     "CONNECTED_MESSAGE",
     "CLOSED_MESSAGE",
 )
@@ -35,13 +37,32 @@ DEFAULT_SHORTCUTS = [
     {"id": "trimming", "label": "Trimming", "message": "✂️ *Trimming*"},
 ]
 
+SUMMARY_INDICATOR_ROLES = ("green", "red", "close")
+
+DEFAULT_SUMMARY_INDICATORS = {
+    "green": [],
+    "red": [],
+    "close": [],
+}
+
 DEFAULT_CONFIG = {
     "monitor_stocks": True,
     "monitor_options": True,
     "monitor_futures": True,
     "notify_order_submitted": True,
     "seen_setup_guide": False,
+    "dark_mode": False,
+    "window_geometry": "",
+    "room": {
+        "open_button": "OPEN ROOM",
+        "close_button": "CLOSE ROOM",
+        "open_text": "ROOM OPEN",
+        "closed_text": "ROOM CLOSED",
+    },
     "shortcuts": DEFAULT_SHORTCUTS,
+    "summary_indicators": DEFAULT_SUMMARY_INDICATORS,
+    # Shortcut ids that increment the semi-unique trade ID ({cnt})
+    "trade_counter_shortcuts": [],
     "percentages": {
         "defaults": {
             "stock": {"unit": "quantity", "value": 100},
@@ -105,9 +126,13 @@ def _deep_merge_defaults(data):
     if not isinstance(data, dict):
         return merged
 
-    for key in ("monitor_stocks", "monitor_options", "monitor_futures", "notify_order_submitted", "seen_setup_guide"):
+    for key in ("monitor_stocks", "monitor_options", "monitor_futures", "notify_order_submitted", "seen_setup_guide", "dark_mode"):
         if key in data:
             merged[key] = bool(data[key])
+
+    geometry = str(data.get("window_geometry") or "").strip()
+    if geometry:
+        merged["window_geometry"] = geometry
 
     if isinstance(data.get("shortcuts"), list) and data["shortcuts"]:
         shortcuts = []
@@ -121,6 +146,42 @@ def _deep_merge_defaults(data):
             })
         if shortcuts:
             merged["shortcuts"] = shortcuts
+
+    shortcut_ids = {item["id"] for item in merged["shortcuts"]}
+    indicators = data.get("summary_indicators") or {}
+    if isinstance(indicators, dict):
+        cleaned_indicators = {role: [] for role in SUMMARY_INDICATOR_ROLES}
+        claimed = set()
+        for role in SUMMARY_INDICATOR_ROLES:
+            values = indicators.get(role) or []
+            if not isinstance(values, list):
+                continue
+            for raw_id in values:
+                sid = str(raw_id or "").strip()
+                if not sid or sid not in shortcut_ids or sid in claimed:
+                    continue
+                cleaned_indicators[role].append(sid)
+                claimed.add(sid)
+        merged["summary_indicators"] = cleaned_indicators
+
+    counter_shortcuts = []
+    raw_counter = data.get("trade_counter_shortcuts") or []
+    if isinstance(raw_counter, list):
+        seen = set()
+        for raw_id in raw_counter:
+            sid = str(raw_id or "").strip()
+            if not sid or sid not in shortcut_ids or sid in seen:
+                continue
+            counter_shortcuts.append(sid)
+            seen.add(sid)
+    merged["trade_counter_shortcuts"] = counter_shortcuts
+
+    room = data.get("room") or {}
+    if isinstance(room, dict):
+        for key in ("open_button", "close_button", "open_text", "closed_text"):
+            value = str(room.get(key, merged["room"][key])).strip()
+            if value:
+                merged["room"][key] = value
 
     pct = data.get("percentages") or {}
     if isinstance(pct, dict):
@@ -261,6 +322,42 @@ def calculate_percentage(config, contract, quantity, price=0):
     if pct == int(pct):
         return str(int(pct))
     return f"{pct:.2f}".rstrip("0").rstrip(".")
+
+
+def summary_indicators(config=None):
+    """Return {green: [ids], red: [ids], close: [ids]} from config."""
+    cfg = config if isinstance(config, dict) else load_config()
+    indicators = cfg.get("summary_indicators") or {}
+    result = {role: [] for role in SUMMARY_INDICATOR_ROLES}
+    if not isinstance(indicators, dict):
+        return result
+    for role in SUMMARY_INDICATOR_ROLES:
+        values = indicators.get(role) or []
+        if isinstance(values, list):
+            result[role] = [str(v) for v in values if str(v or "").strip()]
+    return result
+
+
+def summary_role_for_shortcut(shortcut_id, config=None):
+    """Return 'green', 'red', 'close', or None for a shortcut id."""
+    sid = str(shortcut_id or "").strip()
+    if not sid:
+        return None
+    indicators = summary_indicators(config)
+    for role in SUMMARY_INDICATOR_ROLES:
+        if sid in indicators[role]:
+            return role
+    return None
+
+
+def shortcut_increments_counter(shortcut_id, config=None):
+    """True if this shortcut should bump the trade ID counter."""
+    sid = str(shortcut_id or "").strip()
+    if not sid:
+        return False
+    cfg = config if isinstance(config, dict) else load_config()
+    ids = cfg.get("trade_counter_shortcuts") or []
+    return sid in [str(v) for v in ids]
 
 
 def format_percentage_label(pct):

@@ -15,7 +15,7 @@ from config_store import (
     load_config,
     load_env_files,
 )
-
+from summary_store import current_cnt_emoji
 load_env_files()
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
@@ -30,6 +30,7 @@ def getenv_or_default(key, default):
     if value is None or not str(value).strip():
         return default
     return value
+
 
 def reload_env():
     load_env_files(override=True)
@@ -237,6 +238,8 @@ def build_contract_context(contract, quantity=0, price=0, app_config=None):
         'quantity': quantity_display,
         'percentage': format_percentage_label(pct),
         'percentage_raw': pct if pct is not None else '',
+        # Number-emoji trade ID (e.g. 1️⃣4️⃣). Empty until a mapped shortcut increments it.
+        'cnt': current_cnt_emoji(),
     }
 
 def build_order_context(contract, order, status='', app_config=None):
@@ -476,7 +479,11 @@ class TradeMonitor(EWrapper, EClient):
         contract, execution = pending
         if self._should_skip_contract(contract):
             return
-        self.last_execution_by_perm_id[execution.permId] = (contract, execution, commissionReport.commission)
+        self.last_execution_by_perm_id[execution.permId] = (
+            contract,
+            execution,
+            commissionReport.commission,
+        )
         self._try_notify_fill(execution.permId)
 
     def execDetailsEnd(self, reqId):

@@ -3,6 +3,14 @@
   "monitor_options": true,
   "monitor_futures": true,
   "notify_order_submitted": true,
+  "dark_mode": false,
+  "window_geometry": "",
+  "room": {
+    "open_button": "OPEN ROOM",
+    "close_button": "CLOSE ROOM",
+    "open_text": "ROOM OPEN",
+    "closed_text": "ROOM CLOSED"
+  },
   "shortcuts": [
     {
       "id": "starting_trade",
@@ -20,6 +28,12 @@
       "message": "✂️ *Trimming*"
     }
   ],
+  "summary_indicators": {
+    "green": [],
+    "red": [],
+    "close": []
+  },
+  "trade_counter_shortcuts": [],
   "percentages": {
     "defaults": {
       "stock": { "unit": "quantity", "value": 100 },
