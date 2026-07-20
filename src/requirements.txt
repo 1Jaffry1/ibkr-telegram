@@ -1,4 +1,5 @@
 ibapi
+python-dotenv
+customtkinter
 python-telegram-bot
 requests
-python-dotenv

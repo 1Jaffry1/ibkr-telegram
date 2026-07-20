@@ -1,18 +1,10 @@
 @echo off
 cls
-color 0C
+color 0A
 echo.
-echo ========================================
-echo    Stopping IBKR Trade Alerts...
-echo ========================================
-echo.
-
+echo Stopping IBKR Trade Alerts...
 taskkill /F /IM python.exe /FI "WINDOWTITLE eq IBKR Trade Alerts*" >nul 2>&1
-taskkill /F /FI "IMAGENAME eq python.exe" /FI "COMMANDLINE eq *gui.py*" >nul 2>&1
-taskkill /F /FI "IMAGENAME eq python.exe" /FI "COMMANDLINE eq *client.py*" >nul 2>&1
-
-echo.
-echo Prefer using the Stop button in the companion window.
-echo If that window is still open, close it manually.
-echo.
-pause
+wmic process where "CommandLine like '%%src\\gui.py%%'" call terminate >nul 2>&1
+wmic process where "CommandLine like '%%gui.py%%'" call terminate >nul 2>&1
+echo Alerts stopped.
+timeout /t 1 >nul

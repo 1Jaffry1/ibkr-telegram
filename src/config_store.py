@@ -2,13 +2,41 @@
 
 import json
 import os
+import shutil
 import uuid
+from pathlib import Path
 from dotenv import dotenv_values, load_dotenv
 
-CONFIG_PATH = "app_config.json"
-ENV_PATH = ".env"
-SECRETS_PATH = "secrets.env"
-MESSAGES_PATH = "messages.env"
+# Project layout:
+#   repo/
+#     env/   ← user settings (gitignored locals + committed *.example)
+#     src/   ← application code (this file lives here)
+ROOT_DIR = Path(__file__).resolve().parent.parent
+ENV_DIR = ROOT_DIR / "env"
+SRC_DIR = Path(__file__).resolve().parent
+
+CONFIG_PATH = str(ENV_DIR / "app_config.json")
+ENV_PATH = str(ENV_DIR / ".env")
+SECRETS_PATH = str(ENV_DIR / "secrets.env")
+MESSAGES_PATH = str(ENV_DIR / "messages.env")
+SUMMARY_PATH = str(ENV_DIR / "trade_summary.json")
+
+# (local file, example template) — examples are committed; locals are gitignored.
+LOCAL_SETTING_BOOTSTRAP = (
+    (ENV_PATH, str(ENV_DIR / ".env.example")),
+    (MESSAGES_PATH, str(ENV_DIR / "messages.env.example")),
+    (SECRETS_PATH, str(ENV_DIR / "secrets.env.example")),
+    (CONFIG_PATH, str(ENV_DIR / "app_config.example.json")),
+)
+
+# Older installs kept settings in the repo root — migrate once, never overwrite env/.
+_LEGACY_ROOT_FILES = (
+    (ROOT_DIR / ".env", ENV_PATH),
+    (ROOT_DIR / "messages.env", MESSAGES_PATH),
+    (ROOT_DIR / "secrets.env", SECRETS_PATH),
+    (ROOT_DIR / "app_config.json", CONFIG_PATH),
+    (ROOT_DIR / "trade_summary.json", SUMMARY_PATH),
+)
 
 SECRET_KEYS = ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
 CONNECTION_KEYS = (
@@ -52,6 +80,8 @@ DEFAULT_CONFIG = {
     "notify_order_submitted": True,
     "seen_setup_guide": False,
     "dark_mode": False,
+    "ui_theme": "classic",
+    "ui_font_size": 13,
     "window_geometry": "",
     "room": {
         "open_button": "OPEN ROOM",
@@ -76,8 +106,48 @@ DEFAULT_CONFIG = {
 }
 
 
+def migrate_legacy_settings():
+    """Move root-level settings into env/ once (does not overwrite existing env files)."""
+    ENV_DIR.mkdir(parents=True, exist_ok=True)
+    moved = []
+    for src, dest in _LEGACY_ROOT_FILES:
+        try:
+            if src.is_file() and not os.path.exists(dest):
+                shutil.move(str(src), dest)
+                moved.append(dest)
+        except OSError:
+            continue
+    return moved
+
+
+def ensure_local_settings():
+    """
+    Create missing local settings from committed *.example files.
+
+    Never overwrites an existing file — safe across git pull / first run.
+    """
+    ENV_DIR.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_settings()
+    created = []
+    for dest, example in LOCAL_SETTING_BOOTSTRAP:
+        if os.path.exists(dest):
+            continue
+        if os.path.exists(example):
+            shutil.copyfile(example, dest)
+            created.append(dest)
+            continue
+        if dest == CONFIG_PATH:
+            # Fallback if example is missing
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(DEFAULT_CONFIG, f, indent=2)
+                f.write("\n")
+            created.append(dest)
+    return created
+
+
 def load_env_files(override=True):
     """Load .env, then messages.env, then secrets.env on top."""
+    ensure_local_settings()
     if os.path.exists(ENV_PATH):
         load_dotenv(ENV_PATH, override=override)
     if os.path.exists(MESSAGES_PATH):
@@ -88,6 +158,7 @@ def load_env_files(override=True):
 
 def read_env_values():
     """Return merged values from .env, messages.env, and secrets.env for the settings UI."""
+    ensure_local_settings()
     values = {}
     for path in (ENV_PATH, MESSAGES_PATH, SECRETS_PATH):
         if os.path.exists(path):
@@ -102,8 +173,28 @@ def write_env_file(path, config):
             f.write(f'{key}="{value}"\n')
 
 
+def _read_env_file_dict(path):
+    if not os.path.exists(path):
+        return {}
+    return dict(dotenv_values(path) or {})
+
+
+def _merge_env_update(path, updates):
+    """
+    Update keys in an env file without dropping unrelated existing keys.
+    Existing values for keys in `updates` are replaced; others are kept.
+    """
+    merged = _read_env_file_dict(path)
+    for key, value in updates.items():
+        if value is None:
+            continue
+        merged[key] = value
+    write_env_file(path, merged)
+    return merged
+
+
 def save_env_and_secrets(all_config):
-    """Split settings into .env, messages.env, and secrets.env."""
+    """Split settings into .env, messages.env, and secrets.env (merge-safe)."""
     secrets = {key: all_config[key] for key in SECRET_KEYS if key in all_config}
     messages = {key: all_config[key] for key in MESSAGE_KEYS if key in all_config}
     connection = {key: all_config[key] for key in CONNECTION_KEYS if key in all_config}
@@ -114,9 +205,9 @@ def save_env_and_secrets(all_config):
         if key not in known:
             connection[key] = value
 
-    write_env_file(ENV_PATH, connection)
-    write_env_file(MESSAGES_PATH, messages)
-    write_env_file(SECRETS_PATH, secrets)
+    _merge_env_update(ENV_PATH, connection)
+    _merge_env_update(MESSAGES_PATH, messages)
+    _merge_env_update(SECRETS_PATH, secrets)
     load_env_files(override=True)
 
 
@@ -129,6 +220,12 @@ def _deep_merge_defaults(data):
     for key in ("monitor_stocks", "monitor_options", "monitor_futures", "notify_order_submitted", "seen_setup_guide", "dark_mode"):
         if key in data:
             merged[key] = bool(data[key])
+
+    try:
+        font_size = int(data.get("ui_font_size", merged.get("ui_font_size", 13)))
+    except (TypeError, ValueError):
+        font_size = 13
+    merged["ui_font_size"] = max(10, min(22, font_size))
 
     geometry = str(data.get("window_geometry") or "").strip()
     if geometry:
@@ -224,10 +321,18 @@ def _deep_merge_defaults(data):
             })
         merged["percentages"]["exceptions"] = exceptions
 
+    # Keep any unknown top-level keys the user (or older versions) stored.
+    if isinstance(data, dict):
+        known = set(DEFAULT_CONFIG.keys())
+        for key, value in data.items():
+            if key not in known:
+                merged[key] = value
+
     return merged
 
 
 def load_config():
+    ensure_local_settings()
     if not os.path.exists(CONFIG_PATH):
         save_config(DEFAULT_CONFIG)
         return json.loads(json.dumps(DEFAULT_CONFIG))
@@ -242,7 +347,37 @@ def load_config():
 
 
 def save_config(config):
-    cleaned = _deep_merge_defaults(config)
+    """
+    Save app_config.json.
+
+    Merges with any existing on-disk config first so a partial in-memory
+    update cannot wipe unrelated user fields.
+    """
+    ensure_local_settings()
+    existing = {}
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                existing = json.load(f) or {}
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+
+    if not isinstance(existing, dict):
+        existing = {}
+    if not isinstance(config, dict):
+        config = {}
+
+    combined = dict(existing)
+    combined.update(config)
+    cleaned = _deep_merge_defaults(combined)
+    # Re-apply unknown keys from both existing and incoming config
+    known = set(DEFAULT_CONFIG.keys())
+    for source in (existing, config):
+        if isinstance(source, dict):
+            for key, value in source.items():
+                if key not in known:
+                    cleaned[key] = value
+
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cleaned, f, indent=2)
         f.write("\n")

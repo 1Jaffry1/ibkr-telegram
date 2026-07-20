@@ -4,7 +4,7 @@ import json
 import os
 import threading
 
-SUMMARY_PATH = "trade_summary.json"
+from config_store import SUMMARY_PATH
 
 DEFAULT_SUMMARY_MESSAGE = """📊 *SUMMARY*
 
@@ -75,6 +75,31 @@ def format_cnt_emoji(n):
     if value <= 0:
         return ""
     return "".join(_DIGIT_KEYCAPS[d] for d in str(value))
+
+
+TEXTBOX_PLACEHOLDER = "{textbox}"
+TEXTBOX_MAX_LEN = 10
+
+
+def message_uses_textbox(text):
+    """True when a shortcut message includes the {textbox} placeholder."""
+    return TEXTBOX_PLACEHOLDER in str(text or "")
+
+
+def shortcuts_use_textbox(shortcuts):
+    """True if any shortcut message uses {textbox}."""
+    return any(message_uses_textbox(item.get("message", "")) for item in (shortcuts or []))
+
+
+def apply_textbox_placeholder(text, user_text=None):
+    """Replace {textbox} with up to 10 characters from the shortcut button."""
+    if text is None:
+        return ""
+    text = str(text)
+    if TEXTBOX_PLACEHOLDER not in text:
+        return text
+    value = str(user_text or "")[:TEXTBOX_MAX_LEN]
+    return text.replace(TEXTBOX_PLACEHOLDER, value)
 
 
 def apply_cnt_placeholder(text, cnt_emoji=None):

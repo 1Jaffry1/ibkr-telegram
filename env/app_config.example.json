@@ -4,6 +4,8 @@
   "monitor_futures": true,
   "notify_order_submitted": true,
   "dark_mode": false,
+  "ui_theme": "classic",
+  "ui_font_size": 13,
   "window_geometry": "",
   "room": {
     "open_button": "OPEN ROOM",

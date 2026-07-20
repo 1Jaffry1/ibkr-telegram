@@ -24,6 +24,10 @@ from summary_store import (
     DEFAULT_LONG_TERM_SUMMARY_MESSAGE,
     DEFAULT_SUMMARY_MESSAGE,
     apply_cnt_placeholder,
+    apply_textbox_placeholder,
+    message_uses_textbox,
+    shortcuts_use_textbox,
+    TEXTBOX_MAX_LEN,
     counter_label_text,
     format_summary_message,
     format_summary_preview,
@@ -34,6 +38,7 @@ from summary_store import (
     summary_label_text,
 )
 from telegram_room import TitleChangeCleaner, room_settings, set_room_state
+from wheel_scroll import bind_mousewheel
 
 
 # --- Colors / theme ---------------------------------------------------------
@@ -179,6 +184,7 @@ Common:
   {contract_description} Human-readable contract
   {sec_type}             STK / OPT / FUT / ...
   {cnt}                  Trade ID as number emoji (e.g. 1️⃣4️⃣ for 14)
+  {textbox}              Shortcut-only: shared 10-char field (Shortcuts corner) fills every {textbox}
 
 Trade ID ({cnt}):
   Optional — omit {cnt} from any template that should not show an ID.
@@ -333,52 +339,6 @@ def apply_theme(root, dark=None):
     style.configure("TSeparator", background=COLORS["border"])
     style.configure("Vertical.TScrollbar", background=COLORS["border"], troughcolor=COLORS["bg"])
     style.configure("Horizontal.TScrollbar", background=COLORS["border"], troughcolor=COLORS["bg"])
-
-
-def bind_mousewheel(scroll_target, *hover_roots):
-    """Enable touchpad / mouse-wheel scrolling over a Canvas or Text widget."""
-
-    def _delta_units(event):
-        delta = getattr(event, "delta", 0) or 0
-        if delta:
-            if platform.system() == "Darwin":
-                return -int(delta)
-            # Windows / most X11: multiples of 120
-            if abs(delta) >= 120:
-                return -int(delta / 120)
-            return -1 if delta > 0 else 1
-        num = getattr(event, "num", None)
-        if num == 4:
-            return -1
-        if num == 5:
-            return 1
-        return 0
-
-    def on_wheel(event):
-        units = _delta_units(event)
-        if not units:
-            return
-        try:
-            scroll_target.yview_scroll(units, "units")
-        except tk.TclError:
-            return
-        return "break"
-
-    def attach(widget):
-        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
-            widget.bind(seq, on_wheel, add="+")
-        for child in widget.winfo_children():
-            attach(child)
-
-    roots = hover_roots or (scroll_target,)
-    for root_widget in roots:
-        attach(root_widget)
-        # Re-attach when new children appear (settings forms grow dynamically)
-        root_widget.bind(
-            "<Map>",
-            lambda e, w=root_widget: attach(w),
-            add="+",
-        )
 
 
 def grid_columns_for_width(width, min_col_width=180, max_cols=4):
@@ -762,7 +722,7 @@ class SettingsWindow(tk.Toplevel):
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        bind_mousewheel(canvas, canvas, frame, outer)
+        bind_mousewheel(self, canvas, canvas, frame, outer)
         if not hasattr(self, "_scroll_canvases"):
             self._scroll_canvases = []
         self._scroll_canvases.append(canvas)
@@ -1009,7 +969,8 @@ class SettingsWindow(tk.Toplevel):
             frame,
             text=(
                 "Trade ID: check “Increment trade ID” on one or more shortcuts (e.g. Starting Trade). "
-                "Use {cnt} in message templates / shortcut text for the number-emoji ID (1️⃣4️⃣)."
+                "Use {cnt} in message templates / shortcut text for the number-emoji ID (1️⃣4️⃣). "
+                "Use {textbox} for a shared 10-character field in the Shortcuts corner (all {textbox} use the same value)."
             ),
             style="Muted.TLabel",
             wraplength=640,
@@ -1352,7 +1313,7 @@ class CompanionApp:
         self.body_canvas.bind("<Configure>", self._on_body_canvas_configure)
         self.body_canvas.pack(side="left", fill="both", expand=True)
         body_scroll.pack(side="right", fill="y")
-        bind_mousewheel(self.body_canvas, self.body_canvas, self.content, body_outer)
+        bind_mousewheel(self.root, self.body_canvas, self.body_canvas, self.content, body_outer)
 
         controls = ttk.Frame(self.content, padding=12)
         controls.pack(fill="x")
@@ -1423,6 +1384,13 @@ class CompanionApp:
 
         shortcuts_wrap = ttk.LabelFrame(self.content, text="Shortcuts", padding=12)
         shortcuts_wrap.pack(fill="x", padx=12, pady=8)
+        shortcuts_top = ttk.Frame(shortcuts_wrap)
+        shortcuts_top.pack(fill="x", pady=(0, 8))
+        self.shortcuts_textbox_bar = ttk.Frame(shortcuts_top)
+        ttk.Label(self.shortcuts_textbox_bar, text="{textbox}:", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        vcmd = (self.root.register(lambda p: len(p) <= TEXTBOX_MAX_LEN), "%P")
+        self.shortcut_textbox = ttk.Entry(self.shortcuts_textbox_bar, width=12, validate="key", validatecommand=vcmd)
+        self.shortcut_textbox.pack(side="left")
         self.shortcuts_container = ttk.Frame(shortcuts_wrap)
         self.shortcuts_container.pack(fill="x")
         self.shortcuts_hint = ttk.Label(
@@ -1454,7 +1422,7 @@ class CompanionApp:
         scroll = ttk.Scrollbar(log_wrap, command=self.log.yview)
         scroll.pack(side="right", fill="y")
         self.log.configure(yscrollcommand=scroll.set)
-        bind_mousewheel(self.log, self.log, log_wrap)
+        bind_mousewheel(self.root, self.log, self.log, log_wrap)
 
         self.refresh_shortcuts()
         self.refresh_room_controls()
@@ -1579,6 +1547,9 @@ class CompanionApp:
         # Shortcuts grid
         cols = grid_columns_for_width(width)
         if not self._shortcut_buttons:
+            refresh = getattr(self.body_canvas, "_ibkr_refresh_scroll", None)
+            if refresh:
+                refresh()
             return
         if not force and cols == self._last_shortcut_cols:
             return
@@ -1590,6 +1561,9 @@ class CompanionApp:
         for i, btn in enumerate(self._shortcut_buttons):
             r, c = divmod(i, cols)
             btn.grid(row=r, column=c, sticky="ew", padx=4, pady=4)
+        refresh = getattr(self.body_canvas, "_ibkr_refresh_scroll", None)
+        if refresh:
+            refresh()
 
     def _maybe_show_first_use_guide(self):
         cfg = load_config()
@@ -1629,6 +1603,18 @@ class CompanionApp:
             text=f'Names become:  … - {room["open_text"]}   /   … - {room["closed_text"]}'
         )
 
+    def _shortcut_textbox_value(self):
+        try:
+            return self.shortcut_textbox.get()
+        except (tk.TclError, AttributeError):
+            return ""
+
+    def _sync_shortcut_textbox(self, shortcuts):
+        if shortcuts_use_textbox(shortcuts):
+            self.shortcuts_textbox_bar.pack(side="right")
+        else:
+            self.shortcuts_textbox_bar.pack_forget()
+
     def refresh_shortcuts(self):
         for child in self.shortcuts_container.winfo_children():
             child.destroy()
@@ -1637,6 +1623,7 @@ class CompanionApp:
         self.app_config = load_config()
         self.refresh_room_controls()
         shortcuts = self.app_config.get("shortcuts") or []
+        self._sync_shortcut_textbox(shortcuts)
         if not shortcuts:
             ttk.Label(self.shortcuts_container, text="No shortcuts configured.", style="Muted.TLabel").grid(
                 row=0, column=0, sticky="w"
@@ -1674,10 +1661,13 @@ class CompanionApp:
             self.append_log(detail, "err")
             show_error(self.root, "Room update failed", detail)
 
-    def send_shortcut(self, shortcut):
+    def send_shortcut(self, shortcut, textbox_text=None):
         if isinstance(shortcut, str):
             shortcut = {"message": shortcut, "id": "", "label": "Shortcut"}
         message = shortcut.get("message", "")
+        if textbox_text is None:
+            textbox_text = self._shortcut_textbox_value() if message_uses_textbox(message) else ""
+        message = apply_textbox_placeholder(message, textbox_text)
         reload_env()
         if not os.getenv('TELEGRAM_BOT_TOKEN') or not os.getenv('TELEGRAM_CHAT_ID'):
             show_error(self.root, "Error", "Set Telegram credentials in Settings first.")
